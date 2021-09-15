@@ -1,0 +1,134 @@
+#!/bin/bash
+###
+### Simple script to provision and update the HDHomeRun software
+### on my NAS heads.
+###
+
+DEPLOYDIR=$(pwd)
+. ${DEPLOYDIR}/variables
+
+###
+### Test to make sure the storage works, or it all goes sideways.
+###
+
+for dir in "${APPPATH}" "${SHOWPATH}"
+do
+  if [ ! -d "${dir}" ]
+  then
+    mkdir -p "${dir}"
+  fi
+done
+
+###
+### Grab and extract the latest binary from Silicondust.
+###
+
+
+echo "Downloading the software from Silicondust"
+cd /tmp
+curl -Lo /tmp/hdhomerun_record_linux http://download.silicondust.com/hdhomerun/hdhomerun_record_linux >/dev/null 2>&1
+if [ ! $? = 0 ]
+then
+  echo "ERROR: Could not download the software, exiting."
+  exit 1
+fi
+chmod +x /tmp/hdhomerun_record_linux
+/tmp/hdhomerun_record_linux 2>&1 >/dev/null
+if [ ! -e "/tmp/hdhomerun_record_arm" ]
+then
+  echo "ERROR: Could not extract the software, exiting."
+  exit 1
+fi
+
+if [ -e "${APPPATH}/hdhomerun_record/bin/hdhomerun_record_arm" ]
+then
+
+  ###
+  ### This is an update, so check and see if the download is new.
+  ###
+
+  CURRENT=$(sha1sum ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_arm | awk '{print $1}')
+  DOWNLOADED=$(sha1sum /tmp/hdhomerun_record_arm | awk '{print $1}')
+
+  if [ ! "${DOWNLOADED}" = "${CURRENT}" ]
+  then
+    echo "Performing an upgrade, as the software is out of date."
+    systemctl stop hdhomerun >/dev/null
+    mv /tmp/hdhomerun_record_arm ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_arm
+    systemctl start hdhomerun
+  else
+    echo "No update necessary."
+  fi
+else
+
+  ###
+  ### This is a new installation.
+  ###
+
+  echo "Performing a new installation."
+  if [ ! -e ${APPPATH}/hdhomerun_record/bin ]
+  then
+    mkdir -p ${APPPATH}/hdhomerun_record/bin
+  fi
+  mv /tmp/hdhomerun_record_arm ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_arm
+  chown root:root ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_arm
+
+  chmod 755 ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_arm
+
+  cat <<EOF >${APPPATH}/hdhomerun_record/bin/hdhomerun_record
+#!/bin/bash
+${APPPATH}/hdhomerun_record/bin/hdhomerun_record_arm \$*
+EOF
+
+  cp ${DEPLOYDIR}/variables /etc/hdhomerun.location
+
+  chown root:root ${APPPATH}/hdhomerun_record/bin/hdhomerun_record
+  chmod 755 ${APPPATH}/hdhomerun_record/bin/hdhomerun_record
+
+  cat <<EOF >${APPPATH}/hdhomerun_record/hdhomerun.conf
+RecordPath=${SHOWPATH}
+EOF
+
+  cat <<EOF >/lib/systemd/system/hdhomerun.service
+[Unit]
+Description=HDHomerun Service
+After=network-up.service
+
+[Service]
+Type=oneshot
+ExecStart=${APPPATH}/hdhomerun_record/bin/hdhomerun_record start --conf ${APPPATH}/hdhomerun_record/hdhomerun.conf
+ExecStop=${APPPATH}/hdhomerun_record/bin/hdhomerun_record stop --conf ${APPPATH}/hdhomerun_record/hdhomerun.conf
+RemainAfterExit=true
+Nice=-1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl enable hdhomerun >/dev/null 2>&1
+  if [ ! $? = 0 ]
+  then
+    echo "ERROR: Could not enable HDHomerun, exiting."
+    exit 1
+  fi
+  systemctl start hdhomerun >/dev/null 2>&1
+  if [ ! $? = 0 ]
+  then
+    echo "ERROR: Could not start HDHomerun, exiting."
+    exit 1
+  fi
+
+  ###
+  ### Set up a cron job to run the deploy weekly to update the HDHomeRun
+  ### binary automatically.
+  ###
+
+  cat <<EOF >/etc/cron.d/hdhomerun
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin:/root/bin
+
+00 00 * * 00 root ${DEPLOYDIR}/deploy_hdhomerun >/var/log/hdhomerun_deploy.log 2>&1
+EOF
+
+fi
+

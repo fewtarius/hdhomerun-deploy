@@ -1,0 +1,3 @@
+BASEPATH="/volume1/hdhomerun"
+APPPATH="${BASEPATH}/app"
+SHOWPATH="${BASEPATH}/shows"
