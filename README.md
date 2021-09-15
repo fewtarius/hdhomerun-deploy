@@ -32,13 +32,13 @@ Unless required by applicable law or agreed to in writing, software distributed 
 ```
 $ mkdir /yourvolume/hdhomerun
 $ cd /yourvolume/hdhomerun
-$ curl -o deploy_hdhomerun.zip https://github.com/andrewwyatt/deploy_hdhomerun/archive/main.zip
+$ curl -Lo deploy_hdhomerun.tar.gz https://github.com/andrewwyatt/deploy_hdhomerun/archive/main.tar.gz
 ```
 
 * Extract the archive and edit variables, changing BASEPATH to your storage volume.
 
 ```
-$ unzip deploy_hdhomerun.zip
+$ tar -xvzf deploy_hdhomerun.tar.gz
 $ cd deploy_hdhomerun-main
 $ vi variables
 ```
