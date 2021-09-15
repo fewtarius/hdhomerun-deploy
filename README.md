@@ -29,17 +29,24 @@ Unless required by applicable law or agreed to in writing, software distributed 
 
 * Download a zipped archive of this repository.
 
-  	$ mkdir /yourvolume/hdhomerun
-  	$ cd /yourvolume/hdhomerun
-  	$ curl -o deploy_hdhomerun.zip https://github.com/andrewwyatt/deploy_hdhomerun/archive/main.zip
+```
+$ mkdir /yourvolume/hdhomerun
+$ cd /yourvolume/hdhomerun
+$ curl -o deploy_hdhomerun.zip https://github.com/andrewwyatt/deploy_hdhomerun/archive/main.zip
+```
 
 * Extract the archive and edit variables, changing BASEPATH to your storage volume.
 
-		$ cd deploy_hdhomerun
-		$ vi variables
+```
+$ unzip deploy_hdhomerun.zip
+$ cd deploy_hdhomerun-main
+$ vi variables
+```
 
 * Run the deploy_homerun to perform the installation.
 
-		$ sudo ./deploy_hdhomerun
+```
+$ sudo ./deploy_hdhomerun
+```
 
 When completed, the HDHomerun Record software should be installed and running.
