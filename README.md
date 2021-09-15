@@ -31,7 +31,7 @@ Unless required by applicable law or agreed to in writing, software distributed 
 
   	$ mkdir /yourvolume/hdhomerun
   	$ cd /yourvolume/hdhomerun
-  	$ curl -o deploy_hdhomerun.zip https://github.com/andrewwyatt/deploy_hdhomerun/archive/deploy_hdhomerun.zip
+  	$ curl -o deploy_hdhomerun.zip https://github.com/andrewwyatt/deploy_hdhomerun/archive/main.zip
 
 * Extract the archive and edit variables, changing BASEPATH to your storage volume.
 
