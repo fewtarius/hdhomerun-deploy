@@ -92,7 +92,7 @@ EOF
   cat <<EOF >/lib/systemd/system/hdhomerun.service
 [Unit]
 Description=HDHomerun Service
-After=network-up.service
+After=network-online.target syno-volume.service
 
 [Service]
 Type=oneshot
