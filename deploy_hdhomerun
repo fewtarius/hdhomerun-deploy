@@ -8,6 +8,17 @@ DEPLOYDIR=$(pwd)
 . ${DEPLOYDIR}/variables
 
 ###
+### Test / set architecture
+###
+
+if [[ "$(uname -m)" =~ aarch64 ]]
+then
+  ARCH="arm64"
+else
+  ARCH="arm"
+fi
+
+###
 ### Test to make sure the storage works, or it all goes sideways.
 ###
 
@@ -34,27 +45,27 @@ then
 fi
 chmod +x /tmp/hdhomerun_record_linux
 /tmp/hdhomerun_record_linux 2>&1 >/dev/null
-if [ ! -e "/tmp/hdhomerun_record_arm" ]
+if [ ! -e "/tmp/hdhomerun_record_${ARCH}" ]
 then
   echo "ERROR: Could not extract the software, exiting."
   exit 1
 fi
 
-if [ -e "${APPPATH}/hdhomerun_record/bin/hdhomerun_record_arm" ]
+if [ -e "${APPPATH}/hdhomerun_record/bin/hdhomerun_record_${ARCH}" ]
 then
 
   ###
   ### This is an update, so check and see if the download is new.
   ###
 
-  CURRENT=$(sha1sum ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_arm | awk '{print $1}')
-  DOWNLOADED=$(sha1sum /tmp/hdhomerun_record_arm | awk '{print $1}')
+  CURRENT=$(sha1sum ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_${ARCH} | awk '{print $1}')
+  DOWNLOADED=$(sha1sum /tmp/hdhomerun_record_${ARCH} | awk '{print $1}')
 
   if [ ! "${DOWNLOADED}" = "${CURRENT}" ]
   then
     echo "Performing an upgrade, as the software is out of date."
     systemctl stop hdhomerun >/dev/null
-    mv /tmp/hdhomerun_record_arm ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_arm
+    mv /tmp/hdhomerun_record_${ARCH} ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_${ARCH}
     systemctl start hdhomerun
   else
     echo "No update necessary."
@@ -70,14 +81,14 @@ else
   then
     mkdir -p ${APPPATH}/hdhomerun_record/bin
   fi
-  mv /tmp/hdhomerun_record_arm ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_arm
-  chown root:root ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_arm
+  mv /tmp/hdhomerun_record_${ARCH} ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_${ARCH}
+  chown root:root ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_${ARCH}
 
-  chmod 755 ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_arm
+  chmod 755 ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_${ARCH}
 
   cat <<EOF >${APPPATH}/hdhomerun_record/bin/hdhomerun_record
 #!/bin/bash
-${APPPATH}/hdhomerun_record/bin/hdhomerun_record_arm \$*
+${APPPATH}/hdhomerun_record/bin/hdhomerun_record_${ARCH} \$*
 EOF
 
   cp ${DEPLOYDIR}/variables /etc/hdhomerun.location
