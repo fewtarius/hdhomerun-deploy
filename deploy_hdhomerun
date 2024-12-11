@@ -15,7 +15,7 @@ if [[ "$(uname -m)" =~ aarch64 ]]
 then
   ARCH="arm64"
 else
-  ARCH="arm"
+  ARCH="x64"
 fi
 
 ###
@@ -26,6 +26,7 @@ for dir in "${APPPATH}" "${SHOWPATH}"
 do
   if [ ! -d "${dir}" ]
   then
+    echo "Creating directory ${dir}."
     mkdir -p "${dir}"
   fi
 done
@@ -37,7 +38,7 @@ done
 
 echo "Downloading the software from Silicondust"
 cd /tmp
-curl -Lo /tmp/hdhomerun_record_linux http://download.silicondust.com/hdhomerun/hdhomerun_record_linux >/dev/null 2>&1
+curl -Lo /tmp/hdhomerun_record_linux http://download.silicondust.com/hdhomerun/hdhomerun_record_linux
 if [ ! $? = 0 ]
 then
   echo "ERROR: Could not download the software, exiting."
@@ -110,7 +111,7 @@ Type=oneshot
 ExecStart=${APPPATH}/hdhomerun_record/bin/hdhomerun_record start --conf ${APPPATH}/hdhomerun_record/hdhomerun.conf
 ExecStop=${APPPATH}/hdhomerun_record/bin/hdhomerun_record stop --conf ${APPPATH}/hdhomerun_record/hdhomerun.conf
 RemainAfterExit=true
-Nice=-1
+Nice=0
 
 [Install]
 WantedBy=multi-user.target
