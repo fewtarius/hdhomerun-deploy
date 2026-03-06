@@ -2,3 +2,10 @@
 .DS_Store
 .*.swp
 *.core
+
+# Site-specific configuration (never commit)
+hdhomerun.local
+
+# CLIO (managed automatically)
+.clio/*
+!.clio/instructions.md

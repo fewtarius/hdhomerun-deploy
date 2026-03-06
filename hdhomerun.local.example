@@ -1,0 +1,68 @@
+##
+## hdhomerun.local - Site configuration for deploy_hdhomerun
+##
+## Copy this file to hdhomerun.local and edit for your system.
+## This file is NOT committed to the repository (it's gitignored).
+##
+## cp hdhomerun.local.example hdhomerun.local
+## vi hdhomerun.local
+##
+
+##
+## PATHS
+##
+
+## Root directory for all HDHomeRun data.
+## On a NAS: set this to your storage volume (e.g. /volume1/hdhomerun)
+## On a desktop: a home directory subdirectory works fine.
+BASEPATH="${HOME}/hdhomerun"
+
+## Where the HDHomeRun Record application is installed.
+## Derived from BASEPATH by default - change only if you need a split layout.
+APPPATH="${BASEPATH}/app"
+
+## Where recordings are stored. This is written into hdhomerun.conf as RecordPath.
+## If SHOW_SYMLINK_TARGET is set (below), this path will be created as a symlink
+## pointing there. Otherwise it will be created as a real directory.
+SHOWPATH="${BASEPATH}/shows"
+
+##
+## SYMLINK / NFS SUPPORT
+##
+
+## Optional: if your recordings live on an NFS share or other mount point,
+## set this to the mount path. The deploy script will create SHOWPATH as a
+## symlink pointing here, and will add remote.target / the mount unit as
+## a dependency to the systemd service so HDHomeRun starts after the mount.
+##
+## Leave commented out (or empty) if SHOWPATH is a plain local directory.
+#SHOW_SYMLINK_TARGET="/television"
+
+##
+## SYSTEMD
+##
+
+## Directory to install the hdhomerun.service unit file.
+## Use /etc/systemd/system for SteamOS and other systems with an immutable
+## or read-only /usr. Use /usr/lib/systemd/system on traditional Linux where
+## the filesystem is fully writable (older NAS devices, Debian, Ubuntu, etc).
+SYSTEMD_UNIT_DIR="/etc/systemd/system"
+
+##
+## AUTOMATIC UPDATES (CRON)
+##
+
+## Cron schedule for the weekly update job. Uses standard cron(5) syntax.
+## Default: every Sunday at midnight.
+UPDATE_CRON="00 00 * * 00"
+
+## Where the deploy script lives. Used to write the cron job.
+## Defaults to the directory containing this script - override if needed.
+#DEPLOY_DIR="/home/deck/deploy_hdhomerun"
+
+##
+## LOGGING
+##
+
+## Log file for cron-driven update runs.
+UPDATE_LOG="/var/log/hdhomerun_deploy.log"

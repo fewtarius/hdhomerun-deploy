@@ -1,145 +1,337 @@
 #!/bin/bash
 ###
-### Simple script to provision and update the HDHomeRun software
-### on my NAS heads.
+### deploy_hdhomerun - Provision and update HDHomeRun Record on Linux.
+###
+### Supports ARM64 (aarch64) and x86_64. Tested on SteamOS, Synology DS418,
+### and Netgear RN102. Handles first-time installation and weekly self-updates
+### via cron.
+###
+### Usage:
+###   sudo ./deploy_hdhomerun [-v] [-n]
+###
+###   -v  Verbose output
+###   -n  Dry-run: show what would be done without making changes
 ###
 
-DEPLOYDIR=$(pwd)
-. ${DEPLOYDIR}/variables
+set -euo pipefail
 
 ###
-### Test / set architecture
+### Globals and argument parsing
 ###
 
-if [[ "$(uname -m)" =~ aarch64 ]]
-then
-  ARCH="arm64"
-else
-  ARCH="arm"
-fi
+VERBOSE=0
+DRYRUN=0
 
-###
-### Test to make sure the storage works, or it all goes sideways.
-###
-
-for dir in "${APPPATH}" "${SHOWPATH}"
-do
-  if [ ! -d "${dir}" ]
-  then
-    mkdir -p "${dir}"
-  fi
+while getopts ":vn" opt; do
+  case ${opt} in
+    v) VERBOSE=1 ;;
+    n) DRYRUN=1; VERBOSE=1 ;;
+    *) echo "Usage: $0 [-v] [-n]" >&2; exit 1 ;;
+  esac
 done
 
 ###
-### Grab and extract the latest binary from Silicondust.
+### Helper functions
 ###
 
+log()     { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+verbose() { [[ ${VERBOSE} -eq 1 ]] && echo "[$(date '+%Y-%m-%d %H:%M:%S')] [VERBOSE] $*" || true; }
+err()     { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2; }
+die()     { err "$*"; exit 1; }
 
-echo "Downloading the software from Silicondust"
-cd /tmp
-curl -Lo /tmp/hdhomerun_record_linux http://download.silicondust.com/hdhomerun/hdhomerun_record_linux >/dev/null 2>&1
-if [ ! $? = 0 ]
-then
-  echo "ERROR: Could not download the software, exiting."
-  exit 1
-fi
-chmod +x /tmp/hdhomerun_record_linux
-/tmp/hdhomerun_record_linux 2>&1 >/dev/null
-if [ ! -e "/tmp/hdhomerun_record_${ARCH}" ]
-then
-  echo "ERROR: Could not extract the software, exiting."
-  exit 1
-fi
-
-if [ -e "${APPPATH}/hdhomerun_record/bin/hdhomerun_record_${ARCH}" ]
-then
-
-  ###
-  ### This is an update, so check and see if the download is new.
-  ###
-
-  CURRENT=$(sha1sum ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_${ARCH} | awk '{print $1}')
-  DOWNLOADED=$(sha1sum /tmp/hdhomerun_record_${ARCH} | awk '{print $1}')
-
-  if [ ! "${DOWNLOADED}" = "${CURRENT}" ]
-  then
-    echo "Performing an upgrade, as the software is out of date."
-    systemctl stop hdhomerun >/dev/null
-    mv /tmp/hdhomerun_record_${ARCH} ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_${ARCH}
-    systemctl start hdhomerun
+run() {
+  ## Execute a command, or print it in dry-run mode.
+  if [[ ${DRYRUN} -eq 1 ]]; then
+    echo "[DRY-RUN] $*"
   else
-    echo "No update necessary."
+    "$@"
   fi
+}
+
+###
+### Find deploy directory reliably (works from cron, any working directory)
+###
+
+DEPLOYDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+verbose "Deploy directory: ${DEPLOYDIR}"
+
+###
+### Load site configuration
+###
+
+CONFIG_FILE="${DEPLOYDIR}/hdhomerun.local"
+
+if [[ ! -f "${CONFIG_FILE}" ]]; then
+  die "Configuration file not found: ${CONFIG_FILE}
+  Copy hdhomerun.local.example to hdhomerun.local and edit it for this system."
+fi
+
+verbose "Loading configuration from ${CONFIG_FILE}"
+# shellcheck source=/dev/null
+. "${CONFIG_FILE}"
+
+###
+### Apply config defaults for optional settings
+###
+
+SYSTEMD_UNIT_DIR="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+UPDATE_CRON="${UPDATE_CRON:-00 00 * * 00}"
+UPDATE_LOG="${UPDATE_LOG:-/var/log/hdhomerun_deploy.log}"
+DEPLOY_DIR="${DEPLOY_DIR:-${DEPLOYDIR}}"
+SHOW_SYMLINK_TARGET="${SHOW_SYMLINK_TARGET:-}"
+
+###
+### Validate required config values
+###
+
+[[ -z "${BASEPATH:-}" ]] && die "BASEPATH is not set in ${CONFIG_FILE}"
+[[ -z "${APPPATH:-}" ]]  && die "APPPATH is not set in ${CONFIG_FILE}"
+[[ -z "${SHOWPATH:-}" ]] && die "SHOWPATH is not set in ${CONFIG_FILE}"
+
+verbose "BASEPATH:            ${BASEPATH}"
+verbose "APPPATH:             ${APPPATH}"
+verbose "SHOWPATH:            ${SHOWPATH}"
+verbose "SHOW_SYMLINK_TARGET: ${SHOW_SYMLINK_TARGET:-<none>}"
+verbose "SYSTEMD_UNIT_DIR:    ${SYSTEMD_UNIT_DIR}"
+verbose "UPDATE_CRON:         ${UPDATE_CRON}"
+verbose "UPDATE_LOG:          ${UPDATE_LOG}"
+verbose "DEPLOY_DIR:          ${DEPLOY_DIR}"
+
+###
+### Root check
+###
+
+if [[ ${EUID} -ne 0 ]] && [[ ${DRYRUN} -eq 0 ]]; then
+  die "This script must be run as root. Try: sudo $0"
+fi
+
+###
+### Architecture detection
+###
+
+case "$(uname -m)" in
+  aarch64) ARCH="arm64" ;;
+  x86_64)  ARCH="x64" ;;
+  *)        die "Unsupported architecture: $(uname -m)" ;;
+esac
+
+log "Architecture: ${ARCH}"
+
+###
+### Temp file cleanup trap
+###
+
+TMPDIR_WORK="$(mktemp -d /tmp/hdhomerun_deploy.XXXXXX)"
+trap 'verbose "Cleaning up ${TMPDIR_WORK}"; rm -rf "${TMPDIR_WORK}"' EXIT
+
+###
+### Ensure storage directories / symlink exist
+###
+
+log "Checking storage paths..."
+
+## Create APPPATH if needed
+if [[ ! -d "${APPPATH}" ]]; then
+  log "Creating application directory: ${APPPATH}"
+  run mkdir -p "${APPPATH}"
+fi
+
+## Handle SHOWPATH: symlink or real directory
+if [[ -n "${SHOW_SYMLINK_TARGET}" ]]; then
+  ## User wants SHOWPATH to be a symlink
+  if [[ -L "${SHOWPATH}" ]]; then
+    current_target="$(readlink "${SHOWPATH}")"
+    if [[ "${current_target}" != "${SHOW_SYMLINK_TARGET}" ]]; then
+      log "Updating symlink: ${SHOWPATH} -> ${SHOW_SYMLINK_TARGET} (was: ${current_target})"
+      run rm "${SHOWPATH}"
+      run ln -s "${SHOW_SYMLINK_TARGET}" "${SHOWPATH}"
+    else
+      verbose "Symlink already correct: ${SHOWPATH} -> ${SHOW_SYMLINK_TARGET}"
+    fi
+  elif [[ -d "${SHOWPATH}" ]]; then
+    die "${SHOWPATH} is a real directory but SHOW_SYMLINK_TARGET is set.
+  Remove or rename ${SHOWPATH} if you want it replaced with a symlink."
+  else
+    log "Creating symlink: ${SHOWPATH} -> ${SHOW_SYMLINK_TARGET}"
+    run mkdir -p "$(dirname "${SHOWPATH}")"
+    run ln -s "${SHOW_SYMLINK_TARGET}" "${SHOWPATH}"
+  fi
+else
+  ## SHOWPATH is a real directory
+  if [[ -L "${SHOWPATH}" ]]; then
+    die "${SHOWPATH} is a symlink but SHOW_SYMLINK_TARGET is not set.
+  Set SHOW_SYMLINK_TARGET in ${CONFIG_FILE} or remove the symlink manually."
+  fi
+  if [[ ! -d "${SHOWPATH}" ]]; then
+    log "Creating recording directory: ${SHOWPATH}"
+    run mkdir -p "${SHOWPATH}"
+  else
+    verbose "Recording directory exists: ${SHOWPATH}"
+  fi
+fi
+
+###
+### Download and extract the latest binary from Silicondust
+###
+
+DOWNLOAD_URL="http://download.silicondust.com/hdhomerun/hdhomerun_record_linux"
+DOWNLOAD_BUNDLE="${TMPDIR_WORK}/hdhomerun_record_linux"
+EXTRACTED_BIN="${TMPDIR_WORK}/hdhomerun_record_${ARCH}"
+INSTALL_BIN="${APPPATH}/hdhomerun_record/bin/hdhomerun_record_${ARCH}"
+
+log "Downloading HDHomeRun Record from Silicondust..."
+if [[ ${DRYRUN} -eq 0 ]]; then
+  curl --fail --silent --show-error --location \
+    -o "${DOWNLOAD_BUNDLE}" \
+    "${DOWNLOAD_URL}" || die "Download failed from ${DOWNLOAD_URL}"
+
+  chmod +x "${DOWNLOAD_BUNDLE}"
+  verbose "Extracting binary for ${ARCH}..."
+  "${DOWNLOAD_BUNDLE}" 2>/dev/null >/dev/null || true  # exits non-zero by design
+  ## The extractor drops files into the current directory (cwd), so we run it from TMPDIR_WORK
+  (cd "${TMPDIR_WORK}" && "${DOWNLOAD_BUNDLE}" 2>/dev/null >/dev/null || true)
+
+  if [[ ! -f "${EXTRACTED_BIN}" ]]; then
+    die "Extraction failed: ${EXTRACTED_BIN} not found after running bundle."
+  fi
+  verbose "Extracted: ${EXTRACTED_BIN} ($(wc -c < "${EXTRACTED_BIN}") bytes)"
+fi
+
+###
+### Update or fresh install?
+###
+
+if [[ -f "${INSTALL_BIN}" ]]; then
+
+  ###
+  ### Update path: compare checksums
+  ###
+
+  if [[ ${DRYRUN} -eq 0 ]]; then
+    CURRENT_SUM="$(sha256sum "${INSTALL_BIN}" | awk '{print $1}')"
+    DOWNLOADED_SUM="$(sha256sum "${EXTRACTED_BIN}" | awk '{print $1}')"
+    verbose "Installed sha256:   ${CURRENT_SUM}"
+    verbose "Downloaded sha256:  ${DOWNLOADED_SUM}"
+  fi
+
+  if [[ ${DRYRUN} -eq 1 ]] || [[ "${DOWNLOADED_SUM}" != "${CURRENT_SUM}" ]]; then
+    log "Update available - stopping service, replacing binary, restarting..."
+    run systemctl stop hdhomerun
+    run mv "${EXTRACTED_BIN}" "${INSTALL_BIN}"
+    run chmod 755 "${INSTALL_BIN}"
+    run chown root:root "${INSTALL_BIN}"
+    run systemctl start hdhomerun
+    log "Update complete."
+  else
+    log "No update necessary (sha256 matches)."
+  fi
+
 else
 
   ###
-  ### This is a new installation.
+  ### Fresh installation
   ###
 
-  echo "Performing a new installation."
-  if [ ! -e ${APPPATH}/hdhomerun_record/bin ]
-  then
-    mkdir -p ${APPPATH}/hdhomerun_record/bin
-  fi
-  mv /tmp/hdhomerun_record_${ARCH} ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_${ARCH}
-  chown root:root ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_${ARCH}
+  log "Performing a new installation..."
 
-  chmod 755 ${APPPATH}/hdhomerun_record/bin/hdhomerun_record_${ARCH}
+  ## Create bin directory
+  run mkdir -p "${APPPATH}/hdhomerun_record/bin"
 
-  cat <<EOF >${APPPATH}/hdhomerun_record/bin/hdhomerun_record
+  ## Install the architecture-specific binary
+  run mv "${EXTRACTED_BIN}" "${INSTALL_BIN}"
+  run chown root:root "${INSTALL_BIN}"
+  run chmod 755 "${INSTALL_BIN}"
+
+  ## Install arch-agnostic wrapper script
+  WRAPPER="${APPPATH}/hdhomerun_record/bin/hdhomerun_record"
+  log "Creating wrapper: ${WRAPPER}"
+  if [[ ${DRYRUN} -eq 0 ]]; then
+    cat > "${WRAPPER}" <<WRAPPER_EOF
 #!/bin/bash
-${APPPATH}/hdhomerun_record/bin/hdhomerun_record_${ARCH} \$*
-EOF
+exec "${INSTALL_BIN}" "\$@"
+WRAPPER_EOF
+  else
+    echo "[DRY-RUN] Would write wrapper: ${WRAPPER}"
+  fi
+  run chown root:root "${WRAPPER}"
+  run chmod 755 "${WRAPPER}"
 
-  cp ${DEPLOYDIR}/variables /etc/hdhomerun.location
-
-  chown root:root ${APPPATH}/hdhomerun_record/bin/hdhomerun_record
-  chmod 755 ${APPPATH}/hdhomerun_record/bin/hdhomerun_record
-
-  cat <<EOF >${APPPATH}/hdhomerun_record/hdhomerun.conf
+  ## Write hdhomerun.conf (RecordPath only - StorageID is added by the app on first run)
+  CONF="${APPPATH}/hdhomerun_record/hdhomerun.conf"
+  log "Writing configuration: ${CONF}"
+  if [[ ${DRYRUN} -eq 0 ]]; then
+    cat > "${CONF}" <<CONF_EOF
 RecordPath=${SHOWPATH}
-EOF
+CONF_EOF
+  else
+    echo "[DRY-RUN] Would write conf with RecordPath=${SHOWPATH}"
+  fi
 
-  cat <<EOF >/lib/systemd/system/hdhomerun.service
+  ## Build systemd After= line: include remote.target if using a network/NFS mount
+  SYSTEMD_AFTER="network-online.target"
+  if [[ -n "${SHOW_SYMLINK_TARGET}" ]]; then
+    ## Derive the systemd mount unit name from the mount path
+    ## e.g. /television -> television.mount
+    MOUNT_UNIT="$(systemd-escape --path --suffix=mount "${SHOW_SYMLINK_TARGET}" 2>/dev/null || true)"
+    if [[ -n "${MOUNT_UNIT}" ]]; then
+      SYSTEMD_AFTER="network-online.target remote-fs.target ${MOUNT_UNIT}"
+      verbose "Adding mount dependency: ${MOUNT_UNIT}"
+    else
+      SYSTEMD_AFTER="network-online.target remote-fs.target"
+    fi
+  fi
+
+  ## Install systemd unit
+  UNIT_FILE="${SYSTEMD_UNIT_DIR}/hdhomerun.service"
+  log "Installing systemd unit: ${UNIT_FILE}"
+  if [[ ${DRYRUN} -eq 0 ]]; then
+    cat > "${UNIT_FILE}" <<UNIT_EOF
 [Unit]
-Description=HDHomerun Service
-After=network-online.target syno-volume.service
+Description=HDHomerun Record Service
+After=${SYSTEMD_AFTER}
 
 [Service]
 Type=oneshot
-ExecStart=${APPPATH}/hdhomerun_record/bin/hdhomerun_record start --conf ${APPPATH}/hdhomerun_record/hdhomerun.conf
-ExecStop=${APPPATH}/hdhomerun_record/bin/hdhomerun_record stop --conf ${APPPATH}/hdhomerun_record/hdhomerun.conf
-RemainAfterExit=true
-Nice=-1
+ExecStart=${APPPATH}/hdhomerun_record/bin/hdhomerun_record start --conf ${CONF}
+ExecStop=${APPPATH}/hdhomerun_record/bin/hdhomerun_record stop --conf ${CONF}
+RemainAfterExit=yes
+Nice=0
 
 [Install]
 WantedBy=multi-user.target
-EOF
-
-  systemctl enable hdhomerun >/dev/null 2>&1
-  if [ ! $? = 0 ]
-  then
-    echo "ERROR: Could not enable HDHomerun, exiting."
-    exit 1
-  fi
-  systemctl start hdhomerun >/dev/null 2>&1
-  if [ ! $? = 0 ]
-  then
-    echo "ERROR: Could not start HDHomerun, exiting."
-    exit 1
+UNIT_EOF
+  else
+    echo "[DRY-RUN] Would write unit to ${UNIT_FILE} with After=${SYSTEMD_AFTER}"
   fi
 
-  ###
-  ### Set up a cron job to run the deploy weekly to update the HDHomeRun
-  ### binary automatically.
-  ###
+  run systemctl daemon-reload
 
-  cat <<EOF >/etc/cron.d/hdhomerun
+  run systemctl enable hdhomerun || die "Could not enable hdhomerun service."
+  run systemctl start hdhomerun  || die "Could not start hdhomerun service."
+
+  ## Install weekly update cron job
+  CRON_FILE="/etc/cron.d/hdhomerun"
+  log "Installing cron job: ${CRON_FILE}"
+  if [[ ${DRYRUN} -eq 0 ]]; then
+    cat > "${CRON_FILE}" <<CRON_EOF
 SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin:/root/bin
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
-00 00 * * 00 root ${DEPLOYDIR}/deploy_hdhomerun >/var/log/hdhomerun_deploy.log 2>&1
-EOF
+${UPDATE_CRON} root ${DEPLOY_DIR}/deploy_hdhomerun >${UPDATE_LOG} 2>&1
+CRON_EOF
+  else
+    echo "[DRY-RUN] Would write cron: ${CRON_FILE}"
+    echo "[DRY-RUN]   Schedule: ${UPDATE_CRON}"
+    echo "[DRY-RUN]   Command:  ${DEPLOY_DIR}/deploy_hdhomerun >${UPDATE_LOG} 2>&1"
+  fi
 
+  log "Installation complete. HDHomeRun Record is running."
 fi
 
+###
+### Always ensure the service is enabled (idempotent, quiet)
+###
+
+run systemctl enable hdhomerun --now >/dev/null 2>&1 || true
+
+log "Done."

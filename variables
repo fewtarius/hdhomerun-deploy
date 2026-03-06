@@ -1,3 +1,13 @@
-BASEPATH="/volume1/hdhomerun"
+##
+## variables - Backward-compatibility shim.
+##
+## The deploy_hdhomerun script now reads hdhomerun.local for all
+## configuration. This file is retained so that any external references
+## to it (e.g. /etc/hdhomerun.location) continue to work.
+##
+## To configure this deployment, edit hdhomerun.local instead.
+##
+
+BASEPATH="${HOME}/hdhomerun"
 APPPATH="${BASEPATH}/app"
 SHOWPATH="${BASEPATH}/shows"
